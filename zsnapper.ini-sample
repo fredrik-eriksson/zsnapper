@@ -1,0 +1,45 @@
+[settings]
+# NOTE:
+# --stdin is used to pass password to sudo, this does not work the first time
+# a user uses sudo, so make sure to run a sudo command manually first
+#
+# or preferably, leave this commented out and use NOPASSWD for sudo...
+;sudo=<password>
+
+
+[tank]
+snapshot_interval=1h
+# NOTE:
+# The command arguments must not contain whitespace characters, since
+# split() is used to create an array to subprocess.Popen()
+remote_zfs_cmd=/usr/bin/ssh ${remote_user}@${remote_host} /usr/bin/sudo /sbin/zfs
+remote_test_cmd=/usr/bin/ssh ${remote_user}@${remote_host} echo "success"
+remote_user=backup
+remote_host=hem.winterbird.org
+remote_zfs_target=tank/backup/asuna/tank
+# NOTE:
+# should be empty or 0 for negative value
+remote_enable=1
+
+keep_hourly=24
+keep_weekly=4
+keep_monthly=4
+
+
+[tank/SWAP]
+snapshot_interval=
+remote_enable=
+
+[tank/media]
+snapshot_interval=15m
+
+[tank/tmp]
+snapshot_interval=
+remote_enable=
+
+[tank/var/log]
+snapshot_interval=1m
+
+[tank/var/tmp]
+snapshot_interval=
+remote_enable=
