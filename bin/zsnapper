@@ -39,6 +39,8 @@ DEFAULT_CONFIG = {
         'keep_1min': 0,
         'keep_custom': 0,
         'remote_enable': False,
+        'remote_send_flags': '',
+        'remote_recv_flags': '',
         'remote_zfs_cmd': None,
         'remote_test_cmd': None,
         'remote_zfs_target': None,
@@ -135,7 +137,6 @@ def main():
     remote_targets = {}
     for fs in fslist:
         conf = get_config_for_fs(fs, config)
-        remote_fslist = None
         remote_snapshots = None
         if not conf['remote_enable']:
             continue
@@ -143,7 +144,15 @@ def main():
             failed_snapshots.add(fs)
             continue
 
+        repl_mode = conf['remote_enable']
         remote_fs = conf['remote_zfs_target']
+        send_opts = []
+        recv_opts = []
+        if conf['remote_send_flags']:
+            send_opts = conf['remote_send_flags'].split()
+        if conf['remote_recv_flags']:
+            recv_opts = conf['remote_recv_flags'].split()
+
         rel_local = [k for k, v in remote_targets.items() if v == remote_fs]
         if rel_local:
             rel_local = rel_local[0]
@@ -158,59 +167,70 @@ def main():
         # know which host we're working with.
         if 'remote_host' in conf:
             if conf['remote_host'] in remote_hosts:
-                remote_fslist = remote_hosts[conf['remote_host']]['fslist']
-                remote_snapshots = remote_hosts[conf['remote_host']]['snapshots']
+                remote_snapshots = remote_hosts[conf['remote_host']]
             else:
-                remote_fslist = zsnaplib.get_filesystems(zfs_cmd=remote_zfs_cmd)
                 remote_snapshots = zsnaplib.get_snapshots(zfs_cmd=remote_zfs_cmd)
-                remote_hosts[conf['remote_host']] = {
-                        'fslist': remote_fslist,
-                        'snapshots': remote_snapshots
-                        }
-        if not remote_fslist:
-            remote_fslist = zsnaplib.get_filesystems(zfs_cmd=remote_zfs_cmd)
+                remote_hosts[conf['remote_host']] = remote_snapshots
         if not remote_snapshots:
             remote_snapshots = zsnaplib.get_snapshots(zfs_cmd=remote_zfs_cmd)
-
-        remote_zfs_cmd.extend(['receive', remote_fs])
 
         if remote_fs not in remote_snapshots:
             # Remote FS doesn't exist, send a new copy
             log.info('{} sending base copy to {}'.format(fs, ' '.join(remote_zfs_cmd)))
+            # oldest snapshot is base_snap if repl_mode != latest
+            base_snap = snapshots[fs][-1]
+            if repl_mode == 'latest':
+                base_snap = snapshots[fs][0]
             try:
-                zsnaplib.send_snapshot(fs, snapshots[fs][0], remote_zfs_cmd, sudo)
+                zsnaplib.send_snapshot(
+                        fs, 
+                        base_snap, 
+                        remote_zfs_cmd,
+                        remote_fs,
+                        sudo=sudo,
+                        send_opts=send_opts,
+                        recv_opts=recv_opts)
                 log.info('{} base copy sent'.format(fs))
             except zsnaplib.ZFSSnapshotError as e:
                 failed_snapshots.add(fs)
                 log.warning(e)
                 ret = RET_CODES['ERROR']
                 continue
-        else: 
-            # Remote FS exists, find last common snapshot
-            last_remote = None
-            for remote_snap in remote_snapshots[remote_fs]:
-                if remote_snap in snapshots[fs]:
-                    last_remote = remote_snap
-                    break
-            if not last_remote:
-                failed_snapshots.add(fs)
-                log.warning('No common snapshot local and remote, you need to create a new base copy!')
-                ret = RET_CODES['ERROR']
-                continue
-            last_local = snapshots[fs][0]
-            if last_remote == last_local:
-                log.info("{} snapshot from {} is already present on remote".format(fs, last_local))
-                continue
+            remote_snapshots[remote_fs] = [base_snap]
 
-            log.info('{} incremental {} -> {}, remote is {}'.format(fs, last_remote, snapshots[fs][0], ' '.join(remote_zfs_cmd)))
-            try:
-                zsnaplib.send_snapshot(fs, snapshots[fs][0], remote_zfs_cmd, sudo, repl_from=last_remote)
-                log.info('{} successfully sent to remote'.format(fs))
-            except zsnaplib.ZFSSnapshotError as e:
-                log.warning(e)
+        # Remote FS now exists, one way or another find last common snapshot
+        last_remote = None
+        for remote_snap in remote_snapshots[remote_fs]:
+            if remote_snap in snapshots[fs]:
+                last_remote = remote_snap
+                break
+        if not last_remote:
+            failed_snapshots.add(fs)
+            log.warning('No common snapshot local and remote, you need to create a new base copy!')
+            ret = RET_CODES['ERROR']
+            continue
+        last_local = snapshots[fs][0]
+        if last_remote == last_local:
+            log.info("{} snapshot from {} is already present on remote".format(fs, last_local))
+            continue
+
+        log.info('{} incremental {} -> {}, remote is {}'.format(fs, last_remote, snapshots[fs][0], ' '.join(remote_zfs_cmd)))
+        try:
+            zsnaplib.send_snapshot(
+                    fs, 
+                    snapshots[fs][0], 
+                    remote_zfs_cmd, 
+                    remote_fs,
+                    sudo=sudo, 
+                    send_opts=send_opts,
+                    recv_opts=recv_opts,
+                    repl_from=last_remote,
+                    repl_mode=repl_mode)
+            log.info('{} successfully sent to remote'.format(fs))
+        except zsnaplib.ZFSSnapshotError as e:
+            log.warning(e)
 
     # Third iteration: weed old snapshots
-    remote_hosts = {}
     for fs in fslist:
         conf = get_config_for_fs(fs, config)
         if fs in failed_snapshots:
@@ -236,7 +256,7 @@ def main():
 
         zsnaplib.weed_snapshots(
                 fs,
-                # do not remove the snapshot just created
+                # never remove the latest snapshot 
                 snapshots[fs][1:],
                 **kwargs)
 

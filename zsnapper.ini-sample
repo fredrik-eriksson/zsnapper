@@ -8,7 +8,13 @@
 
 
 [tank]
+# frequency of snapshots
 snapshot_interval=1h
+
+# Remote replication
+# possible other value is 'latest' to only sync the last available snapshot
+remote_enable=all
+
 # NOTE:
 # The command arguments must not contain whitespace characters, since
 # split() is used to create an array to subprocess.Popen()
@@ -17,11 +23,13 @@ remote_test_cmd=/usr/bin/ssh ${remote_user}@${remote_host} echo "success"
 remote_user=backup
 remote_host=hem.winterbird.org
 remote_zfs_target=tank/backup/asuna/tank
-# NOTE:
-# should be empty or 0 for negative value
-remote_enable=1
+# These can be set to use custom arguments to zfs send and zfs receive
+; remote_send_flags=-D -p
+remote_send_flags=
+remote_recv_flags=
 
 keep_hourly=24
+keep_daily=7
 keep_weekly=4
 keep_monthly=4
 
@@ -39,6 +47,8 @@ remote_enable=
 
 [tank/var/log]
 snapshot_interval=1m
+keep_1min=5
+keep_15min=4
 
 [tank/var/tmp]
 snapshot_interval=

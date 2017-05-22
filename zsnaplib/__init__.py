@@ -50,14 +50,29 @@ def do_zfs_command(args, sudo, pipecmd=None, zfs_cmd=[zfs_bin]):
         raise ZFSSnapshotError('Failed to execute {}: {}'.format(cmd, err))
     return out
 
-def send_snapshot(fs, snap, recv_cmd, sudo=False, repl_from=None):
+def send_snapshot(
+        fs, 
+        snap, 
+        remote_zfs_cmd, 
+        remote_target,
+        sudo=False, 
+        send_opts=[],
+        recv_opts=[], 
+        repl_mode='all',
+        repl_from=None):
     snap = snap.strftime(time_format)
-    pipecmd = recv_cmd
     if repl_from:
+        if repl_mode == 'latest':
+            inc_flag = '-i'
+        else:
+            inc_flag = '-I'
+
         repl_from = repl_from.strftime(time_format)
-        args = [ 'send', '-i', repl_from, '{}@{}'.format(fs, snap) ]
+        args = [ 'send' ] + send_opts + [ inc_flag, '{}@{}'.format(fs, repl_from), '{}@{}'.format(fs, snap) ]
     else:
         args = [ 'send', '{}@{}'.format(fs, snap) ]
+
+    pipecmd = remote_zfs_cmd + [ 'receive' ] + recv_opts + [ remote_target ]
 
     do_zfs_command(args, sudo, pipecmd=pipecmd)
 
@@ -103,8 +118,6 @@ def get_snapshots(sudo=False, zfs_cmd=[zfs_bin]):
 def remove_snapshot(fs, date, sudo=False):
     date = date.strftime(time_format)
     args = [ 'destroy', '{}@{}'.format(fs, date) ]
-    print("would remove snapshot {}@{}".format(fs, date))
-    return
     do_zfs_command(args, sudo)
 
 
