@@ -212,69 +212,69 @@ def weed_snapshots(
                 keep['custom'].append(date)
 
     if keep_yearly:
-        saved['year'] = saved['year'][-keep_yearly:]
+        keep['year'] = keep['year'][-keep_yearly:]
     else:
-        saved['year'] = []
+        keep['year'] = []
     
     if keep_monthly:
-        saved['month'] = saved['month'][-keep_monthly:]
+        keep['month'] = keep['month'][-keep_monthly:]
     else:
-        saved['month'] = []
+        keep['month'] = []
 
     if keep_weekly:
-        saved['week'] = saved['week'][-keep_weekly:]
+        keep['week'] = keep['week'][-keep_weekly:]
     else:
-        saved['week'] = []
+        keep['week'] = []
 
     if keep_daily:
-        saved['day'] = saved['day'][-keep_daily:]
+        keep['day'] = keep['day'][-keep_daily:]
     else:
-        saved['day'] = []
+        keep['day'] = []
 
     if keep_hourly:
-        saved['hour'] = saved['hour'][-keep_hourly:]
+        keep['hour'] = keep['hour'][-keep_hourly:]
     else:
-        saved['hour'] = []
+        keep['hour'] = []
 
     if keep_30min:
-        saved['min30'] = saved['min30'][-keep_30min:]
+        keep['min30'] = keep['min30'][-keep_30min:]
     else:
-        saved['min30'] = []
+        keep['min30'] = []
 
     if keep_15min:
-        saved['min15'] = saved['min15'][-keep_15min:]
+        keep['min15'] = keep['min15'][-keep_15min:]
     else:
-        saved['min15'] = []
+        keep['min15'] = []
 
     if keep_5min:
-        saved['min5'] = saved['min5'][-keep_5min:]
+        keep['min5'] = keep['min5'][-keep_5min:]
     else:
-        saved['min5'] = []
+        keep['min5'] = []
 
     if keep_1min:
-        saved['min1'] = saved['min1'][-keep_1min:]
+        keep['min1'] = keep['min1'][-keep_1min:]
     else:
-        saved['min1'] = []
+        keep['min1'] = []
 
     if keep_custom:
-        saved['custom'] = saved['custom'][-keep_custom:]
+        keep['custom'] = keep['custom'][-keep_custom:]
     else:
-        saved['custom'] = []
+        keep['custom'] = []
 
-    all_saved = []
-    all_saved.extend(saved['year'])
-    all_saved.extend(saved['month'])
-    all_saved.extend(saved['week'])
-    all_saved.extend(saved['day'])
-    all_saved.extend(saved['hour'])
-    all_saved.extend(saved['min30'])
-    all_saved.extend(saved['min15'])
-    all_saved.extend(saved['min5'])
-    all_saved.extend(saved['min1'])
-    all_saved.extend(saved['custom'])
-    all_saved = set(all_saved)
+    all_keep = []
+    all_keep.extend(keep['year'])
+    all_keep.extend(keep['month'])
+    all_keep.extend(keep['week'])
+    all_keep.extend(keep['day'])
+    all_keep.extend(keep['hour'])
+    all_keep.extend(keep['min30'])
+    all_keep.extend(keep['min15'])
+    all_keep.extend(keep['min5'])
+    all_keep.extend(keep['min1'])
+    all_keep.extend(keep['custom'])
+    all_keep = set(all_keep)
 
-    to_remove = [date for date in dates if date not in all_saved]
+    to_remove = [date for date in dates if date not in all_keep]
     for date in to_remove:
         try:
             log.info('{}: removing snapshot from {}'.format(fs, date))

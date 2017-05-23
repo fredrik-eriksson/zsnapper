@@ -28,6 +28,7 @@ RET_CODES = {
 DEFAULT_CONFIG = {
         'snapshot_interval': None,
         'custom_keep_interval': None,
+        'weed_enable': False,
         'keep_yearly': 0,
         'keep_monthly': 0,
         'keep_weekly': 0,
@@ -87,29 +88,12 @@ def get_config_for_fs(fs, config):
 
     return fs_config
 
-def main():
-    config = configparser.SafeConfigParser()
-    config.read('/etc/zsnapper.ini')
-    sudo = False
-    ret = RET_CODES['SUCCESS']
+
+def do_snapshots(fslist, snapshots, config, sudo):
+    failed_snapshots = set()
+    now = datetime.datetime.now()
     log = logging.getLogger(LOGGER)
 
-    if os.getuid() != 0:
-        sudo = True
-        try:
-            sudo = config.get('settings', 'sudo')
-        except (configparser.NoOptionError, configparser.NoSectionError):
-            pass
-    
-    fslist = sorted(zsnaplib.get_filesystems(sudo))
-    snapshots = zsnaplib.get_snapshots(sudo)
-    now = datetime.datetime.now()
-    
-    # if we fail to create or send a snapshot we do not want to remove 
-    # the existing snapshots...
-    failed_snapshots = set()
-
-    # First iteration: create snapshots
     for fs in fslist:
         conf = get_config_for_fs(fs, config)
         if not conf['snapshot_interval']:
@@ -126,15 +110,14 @@ def main():
                 log.info('{} snapshot created'.format(fs))
             except zsnaplib.ZFSSnapshotError as e:
                 log.warning(e)
-                ret = RET_CODES['ERROR']
                 failed_snapshots.add(fs)
-        
-    # reload all snapshots so we get our new snapshots here
-    snapshots = zsnaplib.get_snapshots(sudo)
+    return failed_snapshots
 
-    # Second iteration: Send snapshots
+def send_snapshots(fslist, snapshots, config, sudo):
+    failed_snapshots = set()
     remote_hosts = {}
     remote_targets = {}
+    log = logging.getLogger(LOGGER)
     for fs in fslist:
         conf = get_config_for_fs(fs, config)
         remote_snapshots = None
@@ -194,7 +177,6 @@ def main():
             except zsnaplib.ZFSSnapshotError as e:
                 failed_snapshots.add(fs)
                 log.warning(e)
-                ret = RET_CODES['ERROR']
                 continue
             remote_snapshots[remote_fs] = [base_snap]
 
@@ -206,8 +188,7 @@ def main():
                 break
         if not last_remote:
             failed_snapshots.add(fs)
-            log.warning('No common snapshot local and remote, you need to create a new base copy!')
-            ret = RET_CODES['ERROR']
+            log.warning('{}: No common snapshot local and remote, you need to create a new base copy!'.format(fs))
             continue
         last_local = snapshots[fs][0]
         if last_remote == last_local:
@@ -229,14 +210,18 @@ def main():
             log.info('{} successfully sent to remote'.format(fs))
         except zsnaplib.ZFSSnapshotError as e:
             log.warning(e)
+    return failed_snapshots
 
-    # Third iteration: weed old snapshots
+def weed_snapshots(fslist, snapshots, config, sudo, failed_snapshots):
+    log = logging.getLogger(LOGGER)
     for fs in fslist:
         conf = get_config_for_fs(fs, config)
         if fs in failed_snapshots:
             log.info("Not weeding {} because of snapshot creation/send failure".format(fs))
             continue
         if fs not in snapshots:
+            continue
+        if not conf['weed_enable']:
             continue
 
         kwargs = {k: int(v) for k, v in conf.items() if k in [
@@ -261,7 +246,60 @@ def main():
                 **kwargs)
 
 
+def main():
+    config = configparser.SafeConfigParser()
+    config.read('/etc/zsnapper.ini')
+    sudo = False
+    ret = RET_CODES['SUCCESS']
+    log = logging.getLogger(LOGGER)
 
+    if os.getuid() != 0:
+        sudo = True
+    
+    fslist = sorted(zsnaplib.get_filesystems(sudo))
+    snapshots = zsnaplib.get_snapshots(sudo)
+    
+    failed_snapshots = do_snapshots(fslist, snapshots, config, sudo)
+    if failed_snapshots:
+        ret = RET_CODES['ERROR']
+
+    lockfile = '/tmp/zsnapper.pid'
+    # This loop should run at most twice
+    while True:
+        try:
+            lockfd = os.open(lockfile, os.O_CREAT|os.O_EXCL|os.O_WRONLY, mode=0o640)
+            os.write(lockfd, "{}".format(os.getpid()).encode('utf-8'))
+            os.close(lockfd)
+            break
+        except OSError:
+            pass
+
+        # lock file exists, check if the pid seems valid
+        with open(lockfile, 'r') as f:
+            pid = f.read()
+        try:
+            pid = int(pid)
+            os.kill(pid, 0)
+            # If we got here the lock is owned by an existing pid
+            log.info('Previous run is not completed yet, will not send or weed snapshots')
+            return ret
+        except OSError:
+            # pid is not running, forcing unlock
+            os.remove(lockfile)
+        except ValueError:
+            log.error('lockfile {} exists but does not seem to contain a pid. Will not continue'.format(lockfile))
+            return RET_CODES['FAILED']
+
+
+    # reload all snapshots so we get our new snapshots here
+    snapshots = zsnaplib.get_snapshots(sudo)
+    failed_send = send_snapshots(fslist, snapshots, config, sudo)
+    if failed_send:
+        ret = RET_CODES['ERROR']
+
+    failed_snapshots.update(failed_send)
+    weed_snapshots(fslist, snapshots, config, sudo, failed_snapshots)
+    os.remove(lockfile)
 
 if __name__ == '__main__':
     log = logging.getLogger(LOGGER)
@@ -269,7 +307,10 @@ if __name__ == '__main__':
     handler = logging.StreamHandler()
     handler.setLevel(logging.WARNING)
     log.addHandler(handler)
+
     handler = logging.handlers.SysLogHandler(address='/dev/log')
+    formatter = logging.Formatter(fmt='zsnapper %(message)s')
+    handler.setFormatter(formatter)
     handler.setLevel(logging.INFO)
     log.addHandler(handler)
     sys.exit(main())
