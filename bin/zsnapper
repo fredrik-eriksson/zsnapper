@@ -309,7 +309,7 @@ if __name__ == '__main__':
     log.addHandler(handler)
 
     handler = logging.handlers.SysLogHandler(address='/dev/log')
-    formatter = logging.Formatter(fmt='zsnapper %(message)s')
+    formatter = logging.Formatter(fmt='zsnapper[%(process)s] %(message)s')
     handler.setFormatter(formatter)
     handler.setLevel(logging.INFO)
     log.addHandler(handler)

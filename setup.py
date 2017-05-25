@@ -6,9 +6,7 @@ try:
 except ImportError:
     from distutils import setup
 
-import pwgen
-
-version = '0.1'
+version = '0.2'
 
 setup(
         name='zsnapper',
@@ -21,7 +19,7 @@ setup(
         license='BSD',
         packages=['zsnaplib'],
         classifiers=[
-            'Development Status :: 1 - Planning',
+            'Development Status :: 3 - Alpha',
             'Environment :: Console',
             'Intended Audience :: System Administrators',
             'License :: OSI Approved :: BSD License',
