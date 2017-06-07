@@ -210,6 +210,7 @@ def send_snapshots(fslist, snapshots, config, sudo):
             log.info('{} successfully sent to remote'.format(fs))
         except zsnaplib.ZFSSnapshotError as e:
             log.warning(e)
+            failed_snapshots.add(fs)
     return failed_snapshots
 
 def weed_snapshots(fslist, snapshots, config, sudo, failed_snapshots):

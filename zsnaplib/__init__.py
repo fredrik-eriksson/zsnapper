@@ -46,7 +46,6 @@ def do_zfs_command(args, sudo, pipecmd=None, zfs_cmd=[zfs_bin]):
     (out, err) = ctrl_proc.communicate()
 
     if ctrl_proc.returncode != 0:
-        print(proc.returncode)
         raise ZFSSnapshotError('Failed to execute {}: {}'.format(cmd, err))
     return out
 
