@@ -75,13 +75,14 @@ def str_to_timedelta(deltastr):
             delta += datetime.timedelta(minutes=int(match.group(1)))
     return delta
 
-def get_config_for_fs(fs, config):
-    fs_config = DEFAULT_CONFIG
+def get_config_for_fs(fs, config, remote=''):
+    fs_config = DEFAULT_CONFIG.copy()
     fs_build = ''
     for fs_part in fs.split('/'):
         fs_build += fs_part
-        if fs_build in config:
-            fs_config.update(config[fs_build])
+        section = "{}@{}".format(fs_build, remote)
+        if section in config:
+            fs_config.update(config[section])
         if fs_build == fs:
             break
         fs_build += '/'
@@ -89,13 +90,15 @@ def get_config_for_fs(fs, config):
     return fs_config
 
 
-def do_snapshots(fslist, snapshots, config, sudo):
+def do_snapshots(fslist, snapshots, config, sudo, remote=None, zfs_cmd=None):
     failed_snapshots = set()
     now = datetime.datetime.now()
     log = logging.getLogger(LOGGER)
+    if not remote:
+        remote = ''
 
     for fs in fslist:
-        conf = get_config_for_fs(fs, config)
+        conf = get_config_for_fs(fs, config, remote=remote)
         if not conf['snapshot_interval']:
             continue
 
@@ -106,12 +109,27 @@ def do_snapshots(fslist, snapshots, config, sudo):
             last_snap = datetime.datetime.min
         if interval > datetime.timedelta() and last_snap+interval < now:
             try:
-                zsnaplib.create_snapshot(fs, sudo)
-                log.info('{} snapshot created'.format(fs))
+                if zfs_cmd:
+                    zsnaplib.create_snapshot(fs, sudo, zfs_cmd=zfs_cmd)
+                    log.info('{} snapshot created on {}'.format(fs, remote))
+                else:
+                    zsnaplib.create_snapshot(fs, sudo)
+                    log.info('{} snapshot created'.format(fs))
             except zsnaplib.ZFSSnapshotError as e:
                 log.warning(e)
                 failed_snapshots.add(fs)
     return failed_snapshots
+
+def get_remote_hosts(config):
+    ret = {}
+    for section in config.sections():
+        if '@' in section and 'remote_zfs_cmd' in config[section]:
+            fs, remote = section.split('@', 1)
+            remote_zfs_cmd = Template(config[section]['remote_zfs_cmd']).safe_substitute(config[section])
+            remote_zfs_cmd = remote_zfs_cmd.split()
+            ret[remote] = remote_zfs_cmd
+    return ret
+
 
 def send_snapshots(fslist, snapshots, config, sudo):
     failed_snapshots = set()
@@ -290,8 +308,43 @@ def main():
             log.error('lockfile {} exists but does not seem to contain a pid. Will not continue'.format(lockfile))
             return RET_CODES['FAILED']
 
+    # create any remote snapshots
+    remotes = get_remote_hosts(config)
+    remote_fs = {}
+    remote_snapshots = {}
+    failed_remote_snapshots = {}
+    for remote, zfs_cmd in remotes.items():
+        try:
+            remote_fs[remote] = sorted(zsnaplib.get_filesystems(zfs_cmd=zfs_cmd))
+            remote_snapshots[remote] = zsnaplib.get_snapshots(zfs_cmd=zfs_cmd)
+            failed_remote_snapshots[remote] = do_snapshots(
+                    remote_fs[remote],
+                    remote_snapshots[remote],
+                    config,
+                    False, # sudo should be configured in zfs_cmd already
+                    remote=remote,
+                    zfs_cmd=zfs_cmd)
+        except zsnaplib.ZFSSnapshotError:
+            if remote in remote_fs:
+                del remote_fs[remote]
+            if remote in remote_snapshots:
+                del remote_snapshots[remote]
+            log.warning("Failed to snapshot on {}".format(remote))
+            ret = RET_CODES['ERROR']
+
+    for remote, filesystems in failed_remote_snapshots.items():
+        for fs in filesystems:
+            log.warning("Failed to snapshot {} on {}".format(fs, remote))
 
     # reload all snapshots so we get our new snapshots here
+    for remote, zfs_cmd in remotes.items():
+        try:
+            if remote in remote_snapshots:
+                remote_snapshots[remote] = zsnaplib.get_snapshots(zfs_cmd=zfs_cmd)
+        except zsnaplib.ZFSSnapshotError:
+            del remote_snapshots[remote]
+            log.warning("Could not refresh snapshots on {}".format(remote))
+
     snapshots = zsnaplib.get_snapshots(sudo)
     failed_send = send_snapshots(fslist, snapshots, config, sudo)
     if failed_send:

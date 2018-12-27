@@ -6,7 +6,7 @@ try:
 except ImportError:
     from distutils import setup
 
-version = '0.2'
+version = '0.3'
 
 setup(
         name='zsnapper',
