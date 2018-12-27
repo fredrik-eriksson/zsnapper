@@ -30,7 +30,12 @@ To configure snapshotting of a file system you need to create a section for it a
 Configuration values can be empty, a string, a number or an interval. Interval is simply a number followed by the letter 'd', 'h' or 'm' - as in 'day', 'hour' and 'minute'.
 
 ## Running as non-privileged user
-Managing ZFS snapshots require root privileges, but if zsnapper is started as a non-privileged user it will attempt to use sudo when executing zfs commands. If sudo is installed you can add these lines to your sudo configuration to allow the backup user to run zsnapper on all file systems in the zpool "tank":
+Managing ZFS snapshots require root privileges, but you can configure zsnapper to use sudo to execute the zfs binary with root privileges:
+```
+[tank]
+source_zfs_cmd = /usr/bin/sudo /sbin/zfs
+```
+Since zsnapper should be able to run non-interactively, sudo should not require password to run the zfs commands:
 ```
 backup ALL=(ALL) NOPASSWD: /sbin/zfs snapshot tank*@*
 backup ALL=(ALL) NOPASSWD: /sbin/zfs list -H
@@ -63,9 +68,9 @@ Snapshots can be synced either locally or by invoking zfs on a remote system (ss
 A minimal configuration for local snapshot syncing can look like so:
 ```
 [tank]
-remote_enable=all
-remote_zfs_cmd=/sbin/zfs
-remote_zfs_target=backup/tank
+send_enable=all
+target_zfs_cmd=/sbin/zfs
+target_fs=backup/tank
 ```
 For an example of remote syncing over ssh, see the zsnapper.ini-sample file.
 
@@ -87,47 +92,53 @@ keep_15min=4
 
 Interval of file system snapshots. If unset it will not create any snapshots for the file system.
 
-### remote_enable
+### send_enable
 *default*: unset  
 *valid values*: unset, "all", "latest"
 
 If unset the file system will not be sent anywhere. If set to "latest" only the latest snapshot will be sent for incrimental zfs sends (-i flag to zfs send), if set to "all" (or really, any value other than latest) all snapshots newer then the snapshot on the remote side will be sent (-I flag to zfs send).
 
-Note that remote_zfs_cmd and remote_zfs_target must be set as well.
+Note that target_zfs_cmd and target_fs must be set as well.
 
-### remote_send_flags
+### send_flags
 *default*: unset  
 *valid values*: unset, space separated flags to zfs send
 
 This can be used if you want to enable any (or all) of the optional flags to zfs send,
 
-### remote_recv_flags
+### recv_flags
 *default*: unset  
 *valid values*: unset, space separated flags to zfs receive
 
 This can be used if you want to enable any (or all) of the optional flags to zfs receive,
 
-### remote_zfs_cmd
+### target_zfs_cmd
 *default*: unset  
 *valid values*: a command to invoke zfs; either local or remote
 
-This option is required when remote_enable is set. The string configured here will actually be a template that you can fill with any other option defined in the section. See sample configuration file for details.
+This option is required when send_enable is set. The string configured here will actually be a template that you can fill with any other option defined in the section. See sample configuration file for details.
 
-### remote_test_cmd
+### target_test_cmd
 *default*: unset  
 *valid values*: a command that will exit with returncode 0 if it's possible to send snapshots to remote
 
 The test command is run before each snapshot is transferred to the sync location. If the command exits with a non-zero status zsnapper will consider the sync target unavailable and will not attempt to sync the snapshot and an informational message will be written to syslog. This can be used for example to test if the network is available, or if an external backup drive is plugged in or not. I'm sure there are more creative uses as well.
 
-### remote_host
+### source_test_cmd
+*default*: unset  
+*valid values*: a command that will exit with returncode 0 if the snapshots should be taken
+
+Like target_test_cmd, but checks that the source filesystems are available. 
+
+### target_host
 *default*: unset  
 *valid values*: any
 
-This setting is completely optional - even when doing remote sync. If present zsnapper will cache the output of 'zfs list -H -t snapshot' on the remote side so it only run once on each remote host. It is also useful to be able to use $(remote_host)s in remote_zfs_cmd.
+This setting is completely optional - even when doing remote sync. If present zsnapper will cache the output of 'zfs list -H -t snapshot' on the remote side so it only run once on each remote host. It is also useful to be able to use $(target_host)s in target_zfs_cmd.
 
-### remote_zfs_target
+### target_fs
 *default*: unset  
-*valid values*: Location to this file system on the remote side
+*valid values*: Location to this file system on the receiving side
 
 The file system will be created on the first sync; it must not be created manually.
 

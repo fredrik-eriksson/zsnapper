@@ -39,28 +39,34 @@ DEFAULT_CONFIG = {
         'keep_5min': 0,
         'keep_1min': 0,
         'keep_custom': 0,
-        'remote_enable': False,
-        'remote_send_flags': '',
-        'remote_recv_flags': '',
-        'remote_zfs_cmd': None,
-        'remote_test_cmd': None,
-        'remote_zfs_target': None,
+        'source_zfs_cmd': '/sbin/zfs',
+        'source_test_cmd': None,
+        'target_fs': None,
+        'target_zfs_cmd': '/sbin/zfs',
+        'target_test_cmd': None,
+        'send_flags': '',
+        'recv_flags': '',
+        'send_enable': False,
         }
 
 timedelta_regex = re.compile('([0-9]+)([dhm])')
 
-def remote_is_available(conf):
+def fs_is_available(conf):
     log = logging.getLogger(LOGGER)
-    cmdstr = Template(conf['remote_test_cmd']).safe_substitute(conf)
-    cmd = cmdstr.split()
-    proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
-    (out, err) = proc.communicate()
-
-    log.info('Healthcheck "{}" returned {}'.format(cmdstr, proc.returncode))
-    return proc.returncode == 0
+    for test in ('source_test_cmd', 'target_test_cmd'):
+        if not conf[test]:
+            continue
+        cmdstr = Template(conf[test]).safe_substitute(conf)
+        cmd = cmdstr.split()
+        proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+        (out, err) = proc.communicate()
+        log.info('Healthcheck "{}" returned {}'.format(cmdstr, proc.returncode))
+        if proc.returncode != 0:
+            return False
+    return True
 
 
 def str_to_timedelta(deltastr):
@@ -75,63 +81,71 @@ def str_to_timedelta(deltastr):
             delta += datetime.timedelta(minutes=int(match.group(1)))
     return delta
 
-def get_config_for_fs(fs, config, remote=''):
+def get_config_for_fs(fs, config):
+    if '@' in fs:
+        fs, remote = fs.split('@', 1)
+    else:
+        remote = None
     fs_config = DEFAULT_CONFIG.copy()
     fs_build = ''
     for fs_part in fs.split('/'):
         fs_build += fs_part
-        section = "{}@{}".format(fs_build, remote)
+        if remote:
+            section = "{}@{}".format(fs_build, remote)
+        else:
+            section = fs_build
         if section in config:
             fs_config.update(config[section])
         if fs_build == fs:
             break
         fs_build += '/'
 
+    fs_config['source_fs'] = fs
     return fs_config
 
 
-def do_snapshots(fslist, snapshots, config, sudo, remote=None, zfs_cmd=None):
+def do_snapshots(fslist, snapshots, config):
     failed_snapshots = set()
     now = datetime.datetime.now()
     log = logging.getLogger(LOGGER)
-    if not remote:
-        remote = ''
 
     for fs in fslist:
-        conf = get_config_for_fs(fs, config, remote=remote)
+        conf = get_config_for_fs(fs, config)
+        source_fs = conf['source_fs']
         if not conf['snapshot_interval']:
             continue
 
+        zfs_cmd = Template(conf['source_zfs_cmd']).safe_substitute(conf)
+        zfs_cmd = zfs_cmd.split()
         interval = str_to_timedelta(conf['snapshot_interval'])
-        if fs in snapshots and snapshots[fs] and snapshots[fs][0]:
-            last_snap = snapshots[fs][0]
+        if source_fs in snapshots and snapshots[source_fs] and snapshots[source_fs][0]:
+            last_snap = snapshots[source_fs][0]
         else:
             last_snap = datetime.datetime.min
         if interval > datetime.timedelta() and last_snap+interval < now:
             try:
-                if zfs_cmd:
-                    zsnaplib.create_snapshot(fs, sudo, zfs_cmd=zfs_cmd)
-                    log.info('{} snapshot created on {}'.format(fs, remote))
-                else:
-                    zsnaplib.create_snapshot(fs, sudo)
-                    log.info('{} snapshot created'.format(fs))
+                zsnaplib.create_snapshot(source_fs, zfs_cmd)
+                log.info('{} snapshot created using {}'.format(fs, zfs_cmd))
             except zsnaplib.ZFSSnapshotError as e:
                 log.warning(e)
                 failed_snapshots.add(fs)
     return failed_snapshots
 
-def get_remote_hosts(config):
+def get_remote_sources(config):
     ret = {}
     for section in config.sections():
-        if '@' in section and 'remote_zfs_cmd' in config[section]:
+        if '@' in section and 'source_zfs_cmd' in config[section]:
             fs, remote = section.split('@', 1)
-            remote_zfs_cmd = Template(config[section]['remote_zfs_cmd']).safe_substitute(config[section])
-            remote_zfs_cmd = remote_zfs_cmd.split()
-            ret[remote] = remote_zfs_cmd
+            conf = get_config_for_fs(section, config)
+            if not fs_is_available(conf):
+                continue
+            source_zfs_cmd = Template(config[section]['source_zfs_cmd']).safe_substitute(config[section])
+            source_zfs_cmd = source_zfs_cmd.split()
+            ret[remote] = source_zfs_cmd
     return ret
 
 
-def send_snapshots(fslist, snapshots, config, sudo):
+def send_snapshots(fslist, snapshots, config):
     failed_snapshots = set()
     remote_hosts = {}
     remote_targets = {}
@@ -139,56 +153,59 @@ def send_snapshots(fslist, snapshots, config, sudo):
     for fs in fslist:
         conf = get_config_for_fs(fs, config)
         remote_snapshots = None
-        if not conf['remote_enable']:
+        if not conf['send_enable']:
             continue
-        if conf['remote_test_cmd'] and not remote_is_available(conf):
+        if not fs_is_available(conf):
             failed_snapshots.add(fs)
             continue
 
-        repl_mode = conf['remote_enable']
-        remote_fs = conf['remote_zfs_target']
+        repl_mode = conf['send_enable']
+        target_fs = conf['target_fs']
+        source_fs = conf['source_fs']
         send_opts = []
         recv_opts = []
-        if conf['remote_send_flags']:
-            send_opts = conf['remote_send_flags'].split()
-        if conf['remote_recv_flags']:
-            recv_opts = conf['remote_recv_flags'].split()
+        if conf['send_flags']:
+            send_opts = conf['send_flags'].split()
+        if conf['recv_flags']:
+            recv_opts = conf['recv_flags'].split()
 
-        rel_local = [k for k, v in remote_targets.items() if v == remote_fs]
+        rel_local = [k for k, v in remote_targets.items() if v == target_fs]
         if rel_local:
             rel_local = rel_local[0]
-            rel_fs = fs[len(rel_local):]
-            remote_fs = '{}{}'.format(remote_fs, rel_fs)
-        remote_targets[fs] = remote_fs
+            rel_fs = source_fs[len(rel_local):]
+            target_fs = '{}{}'.format(target_fs, rel_fs)
+        remote_targets[source_fs] = target_fs
 
         # Figure out the state of remote zfs
-        remote_zfs_cmd = Template(conf['remote_zfs_cmd']).safe_substitute(conf)
-        remote_zfs_cmd = remote_zfs_cmd.split()
+        target_zfs_cmd = Template(conf['target_zfs_cmd']).safe_substitute(conf)
+        target_zfs_cmd = target_zfs_cmd.split()
+        source_zfs_cmd = Template(conf['source_zfs_cmd']).safe_substitute(conf)
+        source_zfs_cmd = source_zfs_cmd.split()
         # to avoid running too many commands on remote host, save result if we
         # know which host we're working with.
-        if 'remote_host' in conf:
-            if conf['remote_host'] in remote_hosts:
-                remote_snapshots = remote_hosts[conf['remote_host']]
+        if 'target_host' in conf:
+            if conf['target_host'] in remote_hosts:
+                remote_snapshots = remote_hosts[conf['target_host']]
             else:
-                remote_snapshots = zsnaplib.get_snapshots(zfs_cmd=remote_zfs_cmd)
-                remote_hosts[conf['remote_host']] = remote_snapshots
+                remote_snapshots = zsnaplib.get_snapshots(target_zfs_cmd)
+                remote_hosts[conf['target_host']] = remote_snapshots
         if not remote_snapshots:
-            remote_snapshots = zsnaplib.get_snapshots(zfs_cmd=remote_zfs_cmd)
+            remote_snapshots = zsnaplib.get_snapshots(target_zfs_cmd)
 
-        if remote_fs not in remote_snapshots:
+        if target_fs not in remote_snapshots:
             # Remote FS doesn't exist, send a new copy
-            log.info('{} sending base copy to {}'.format(fs, ' '.join(remote_zfs_cmd)))
+            log.info('{} sending base copy to {}'.format(fs, ' '.join(target_zfs_cmd)))
             # oldest snapshot is base_snap if repl_mode != latest
-            base_snap = snapshots[fs][-1]
+            base_snap = snapshots[source_fs][-1]
             if repl_mode == 'latest':
-                base_snap = snapshots[fs][0]
+                base_snap = snapshots[source_fs][0]
             try:
                 zsnaplib.send_snapshot(
-                        fs, 
+                        source_fs, 
                         base_snap, 
-                        remote_zfs_cmd,
-                        remote_fs,
-                        sudo=sudo,
+                        target_zfs_cmd,
+                        target_fs,
+                        source_zfs_cmd,
                         send_opts=send_opts,
                         recv_opts=recv_opts)
                 log.info('{} base copy sent'.format(fs))
@@ -196,31 +213,31 @@ def send_snapshots(fslist, snapshots, config, sudo):
                 failed_snapshots.add(fs)
                 log.warning(e)
                 continue
-            remote_snapshots[remote_fs] = [base_snap]
+            remote_snapshots[target_fs] = [base_snap]
 
         # Remote FS now exists, one way or another find last common snapshot
         last_remote = None
-        for remote_snap in remote_snapshots[remote_fs]:
-            if remote_snap in snapshots[fs]:
+        for remote_snap in remote_snapshots[target_fs]:
+            if remote_snap in snapshots[source_fs]:
                 last_remote = remote_snap
                 break
         if not last_remote:
             failed_snapshots.add(fs)
             log.warning('{}: No common snapshot local and remote, you need to create a new base copy!'.format(fs))
             continue
-        last_local = snapshots[fs][0]
+        last_local = snapshots[source_fs][0]
         if last_remote == last_local:
-            log.info("{} snapshot from {} is already present on remote".format(fs, last_local))
+            log.info("{} snapshot from {} is already present at target".format(fs, last_local))
             continue
 
-        log.info('{} incremental {} -> {}, remote is {}'.format(fs, last_remote, snapshots[fs][0], ' '.join(remote_zfs_cmd)))
+        log.info('{} incremental {} -> {}, remote is {}'.format(fs, last_remote, snapshots[source_fs][0], ' '.join(target_zfs_cmd)))
         try:
             zsnaplib.send_snapshot(
-                    fs, 
-                    snapshots[fs][0], 
-                    remote_zfs_cmd, 
-                    remote_fs,
-                    sudo=sudo, 
+                    source_fs, 
+                    snapshots[source_fs][0], 
+                    target_zfs_cmd, 
+                    target_fs,
+                    source_zfs_cmd,
                     send_opts=send_opts,
                     recv_opts=recv_opts,
                     repl_from=last_remote,
@@ -231,14 +248,15 @@ def send_snapshots(fslist, snapshots, config, sudo):
             failed_snapshots.add(fs)
     return failed_snapshots
 
-def weed_snapshots(fslist, snapshots, config, sudo, failed_snapshots):
+def weed_snapshots(fslist, snapshots, config, failed_snapshots):
     log = logging.getLogger(LOGGER)
     for fs in fslist:
         conf = get_config_for_fs(fs, config)
+        source_fs = conf['source_fs']
         if fs in failed_snapshots:
             log.info("Not weeding {} because of snapshot creation/send failure".format(fs))
             continue
-        if fs not in snapshots:
+        if source_fs not in snapshots:
             continue
         if not conf['weed_enable']:
             continue
@@ -256,29 +274,37 @@ def weed_snapshots(fslist, snapshots, config, sudo, failed_snapshots):
                 'keep_1min']}
         if conf['custom_keep_interval']:
             kwargs['custom_keep_interval'] = str_to_timedelta(conf['custom_keep_interval'])
-        kwargs['sudo'] = sudo
+
+        zfs_cmd = Template(conf['source_zfs_cmd']).safe_substitute(conf)
+        zfs_cmd = zfs_cmd.split()
 
         zsnaplib.weed_snapshots(
                 fs,
                 # never remove the latest snapshot 
-                snapshots[fs][1:],
+                snapshots[source_fs][1:],
+                zfs_cmd,
                 **kwargs)
 
 
 def main():
     config = configparser.SafeConfigParser()
     config.read('/etc/zsnapper.ini')
-    sudo = False
     ret = RET_CODES['SUCCESS']
     log = logging.getLogger(LOGGER)
 
-    if os.getuid() != 0:
-        sudo = True
+    # guess the local zfs command, this is pretty ugly...
+    zfs_cmd_conf = DEFAULT_CONFIG
+    for section in config.sections():
+        if '@' not in section:
+            if 'source_zfs_cmd' in config[section]:
+                zfs_cmd_conf = get_config_for_fs(section, config)
+    local_zfs_cmd = Template(zfs_cmd_conf['source_zfs_cmd']).safe_substitute(zfs_cmd_conf)
+    local_zfs_cmd = local_zfs_cmd.split()
     
-    fslist = sorted(zsnaplib.get_filesystems(sudo))
-    snapshots = zsnaplib.get_snapshots(sudo)
+    fslist = sorted(zsnaplib.get_filesystems(local_zfs_cmd))
+    snapshots = zsnaplib.get_snapshots(local_zfs_cmd)
     
-    failed_snapshots = do_snapshots(fslist, snapshots, config, sudo)
+    failed_snapshots = do_snapshots(fslist, snapshots, config)
     if failed_snapshots:
         ret = RET_CODES['ERROR']
 
@@ -310,21 +336,18 @@ def main():
             return RET_CODES['FAILED']
 
     # create any remote snapshots
-    remotes = get_remote_hosts(config)
+    remotes = get_remote_sources(config)
     remote_fs = {}
     remote_snapshots = {}
     failed_remote_snapshots = {}
     for remote, zfs_cmd in remotes.items():
         try:
-            remote_fs[remote] = sorted(zsnaplib.get_filesystems(zfs_cmd=zfs_cmd))
-            remote_snapshots[remote] = zsnaplib.get_snapshots(zfs_cmd=zfs_cmd)
+            remote_fs[remote] = sorted(zsnaplib.get_filesystems(zfs_cmd))
+            remote_snapshots[remote] = zsnaplib.get_snapshots(zfs_cmd)
             failed_remote_snapshots[remote] = do_snapshots(
-                    remote_fs[remote],
+                    ["{}@{}".format(x, remote) for x in remote_fs[remote]],
                     remote_snapshots[remote],
-                    config,
-                    False, # sudo should be configured in zfs_cmd already
-                    remote=remote,
-                    zfs_cmd=zfs_cmd)
+                    config)
         except zsnaplib.ZFSSnapshotError:
             if remote in remote_fs:
                 del remote_fs[remote]
@@ -341,18 +364,34 @@ def main():
     for remote, zfs_cmd in remotes.items():
         try:
             if remote in remote_snapshots:
-                remote_snapshots[remote] = zsnaplib.get_snapshots(zfs_cmd=zfs_cmd)
+                remote_snapshots[remote] = zsnaplib.get_snapshots(zfs_cmd)
         except zsnaplib.ZFSSnapshotError:
             del remote_snapshots[remote]
             log.warning("Could not refresh snapshots on {}".format(remote))
+    snapshots = zsnaplib.get_snapshots(local_zfs_cmd)
 
-    snapshots = zsnaplib.get_snapshots(sudo)
-    failed_send = send_snapshots(fslist, snapshots, config, sudo)
+    failed_send = send_snapshots(fslist, snapshots, config)
     if failed_send:
         ret = RET_CODES['ERROR']
-
     failed_snapshots.update(failed_send)
-    weed_snapshots(fslist, snapshots, config, sudo, failed_snapshots)
+    for remote in remotes.keys():
+        failed_send = send_snapshots(
+                ["{}@{}".format(x, remote) for x in remote_fs[remote]],
+                remote_snapshots[remote],
+                config)
+        if failed_send:
+            ret = RET_CODES['ERROR']
+        failed_snapshots.update(failed_send)
+
+    weed_snapshots(fslist, snapshots, config, failed_snapshots)
+
+    for remote in remotes.keys():
+        weed_snapshots(
+                ["{}@{}".format(x, remote) for x in remote_fs[remote]],
+                remote_snapshots[remote],
+                config,
+                failed_snapshots)
+
     os.remove(lockfile)
 
 if __name__ == '__main__':

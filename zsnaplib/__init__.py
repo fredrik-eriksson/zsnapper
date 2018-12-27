@@ -5,26 +5,14 @@ import subprocess
 import sys
 
 time_format='%Y-%m-%d_%H%M'
-zfs_bin='/sbin/zfs'
-sudo_bin='/usr/bin/sudo'
 re_snapshot = re.compile(r'^(.*)@([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4})$')
 logger = 'zsnapper'
 
 class ZFSSnapshotError(Exception):
     pass
 
-def do_zfs_command(args, sudo, zfs_cmd, pipecmd=None):
+def do_zfs_command(args, zfs_cmd, pipecmd=None):
     cmd = []
-    sudopw = None
-    if sudo:
-        cmd.append(sudo_bin)
-        if sys.version_info[0] == 3:
-            if isinstance(sudo, str):
-                cmd.append('--stdin')
-                sudopw = '{}\n'.format(sudo)
-        elif isinstance(sudo, basestring):
-            cmd.append('--stdin')
-            sudopw = '{}\n'.format(sudo)
 
     cmd.extend(zfs_cmd)
     cmd.extend(args)
@@ -54,8 +42,7 @@ def send_snapshot(
         snap,
         remote_zfs_cmd, 
         remote_target,
-        zfs_cmd=[zfs_bin],
-        sudo=False, 
+        zfs_cmd,
         send_opts=[],
         recv_opts=[], 
         repl_mode='all',
@@ -74,18 +61,18 @@ def send_snapshot(
 
     pipecmd = remote_zfs_cmd + [ 'receive' ] + recv_opts + [ remote_target ]
 
-    do_zfs_command(args, sudo, zfs_cmd, pipecmd=pipecmd)
+    do_zfs_command(args, zfs_cmd, pipecmd=pipecmd)
 
 
-def create_snapshot(fs, sudo=False, zfs_cmd=[zfs_bin]):
+def create_snapshot(fs, zfs_cmd):
 
     d = datetime.datetime.now().strftime(time_format)
     args = ['snapshot', '{}@{}'.format(fs, d)]
-    do_zfs_command(args, sudo, zfs_cmd)
+    do_zfs_command(args, zfs_cmd)
 
-def get_filesystems(sudo=False, zfs_cmd=[zfs_bin]):
+def get_filesystems(zfs_cmd):
     args = ['list', '-H']
-    out = do_zfs_command(args, sudo, zfs_cmd)
+    out = do_zfs_command(args, zfs_cmd)
     ret = set()
 
     for row in out.splitlines():
@@ -94,9 +81,9 @@ def get_filesystems(sudo=False, zfs_cmd=[zfs_bin]):
     return ret
 
 
-def get_snapshots(sudo=False, zfs_cmd=[zfs_bin]):
+def get_snapshots(zfs_cmd):
     args = [ 'list', '-H', '-t', 'snapshot' ]
-    out = do_zfs_command(args, sudo, zfs_cmd)
+    out = do_zfs_command(args, zfs_cmd)
     snapshots = {}
 
     for row in out.splitlines():
@@ -115,15 +102,17 @@ def get_snapshots(sudo=False, zfs_cmd=[zfs_bin]):
     return snapshots
 
 
-def remove_snapshot(fs, date, sudo=False, zfs_cmd=[zfs_bin]):
+def remove_snapshot(fs, date, zfs_cmd):
     date = date.strftime(time_format)
     args = [ 'destroy', '{}@{}'.format(fs, date) ]
-    do_zfs_command(args, sudo, zfs_cmd)
+    do_zfs_command(args, zfs_cmd)
 
 
 def weed_snapshots(
         fs,
         dates,
+        zfs_cmd,
+        remote = None,
         custom_keep_interval = None,
         keep_custom = 0,
         keep_yearly = 0,
@@ -134,10 +123,13 @@ def weed_snapshots(
         keep_30min = 0,
         keep_15min = 0,
         keep_5min = 0,
-        keep_1min = 0,
-        sudo = False):
+        keep_1min = 0):
 
     log = logging.getLogger(logger)
+    if '@' in fs:
+        source_fs, remote = fs.split('@', 1)
+    else:
+        source_fs = fs
 
     keep = {
             'custom': [],
@@ -278,7 +270,7 @@ def weed_snapshots(
     for date in to_remove:
         try:
             log.info('{}: removing snapshot from {}'.format(fs, date))
-            remove_snapshot(fs, date, sudo=sudo)
+            remove_snapshot(source_fs, date, zfs_cmd)
         except ZFSSnapshotError as e:
             log.error(str(e))
 

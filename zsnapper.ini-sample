@@ -15,38 +15,40 @@ snapshot_interval=1h
 # Remote replication
 # possible other value is 'latest' to only sync the latest snapshot
 # Set to empty value to not send the snapshots to remote
-remote_enable=all
+send_enable=all
 
-# The remote_zfs_cmd option is the command to use to execute zfs on target machine.
-# remote_test_cmd, if set, is executed before trying to send any snapshot to remote.
-# If remote_test_cmd returns a non-zero status the remote is considered to be unavailable
+# source_zfs_cmd is the command to execute zfs locally.
+# The target_zfs_cmd option is the command to use to execute zfs on target machine.
+# target_test_cmd, if set, is executed before trying to send any snapshot to remote.
+# If target_test_cmd returns a non-zero status the remote is considered to be unavailable
 # and no snapshots are sent. (A warning is written in the log though)
 #
 # NOTE:
 #  The command arguments must not contain whitespace characters, due to implementation details.
 #
-# Variables can be used in remote_zfs_cmd and remote_test_cmd. Any setting
+# Variables can be used in target_zfs_cmd and target_test_cmd. Any setting
 # available in the section can be used as a variable
-remote_zfs_cmd=/usr/bin/ssh ${remote_user}@${remote_host} /usr/bin/sudo /sbin/zfs
-remote_test_cmd=/usr/bin/ssh ${remote_user}@${remote_host} echo "success"
-# The remote_host option is optional but recommended if you send snapshots to a remote host.
-remote_host=my.backup.server.tld
-# remote_user is not a actually a zsnapper option; but it's used as a variable in the remote commands.
-remote_user=backup
+source_zfs_cmd=/usr/bin/sudo /sbin/zfs
+target_zfs_cmd=/usr/bin/ssh ${target_user}@${target_host} /usr/bin/sudo /sbin/zfs
+target_test_cmd=/usr/bin/ssh ${target_user}@${target_host} echo "success"
+# The target_host option is optional but recommended if you send snapshots to a remote host.
+target_host=my.backup.server.tld
+# target_user is not a actually a zsnapper option; but it's used as a variable in the remote commands.
+target_user=backup
 
-# remote_zfs_target is the file system on the remote client that should receive zfs sends
+# target_fs is the file system on the receiving side that should receive zfs sends
 # for this file system.
 # NOTE:
 #  Just like any other option this is inherited by file system descendants,
-#  but if a child has the same remote_zfs_target as the parent, the child 
+#  but if a child has the same target_zfs_target as the parent, the child 
 #  will instead use this to figure out where the parent is and be sent to 
 #  it position relative to the parent.
 #  For example: The local file system tank/ROOT will be sent to tank/backup/client/ROOT.
-remote_zfs_target=tank/backup/client
+target_fs=tank/backup/client
 
 # These can be set to use custom arguments to zfs send and zfs receive
-remote_send_flags=-D -p
-remote_recv_flags=
+send_flags=-D -p
+recv_flags=
 
 # snapshot weeding
 # set weed_enable to an empty value to disable snapshot weeding.
@@ -63,15 +65,15 @@ keep_monthly=4
 
 [tank/SWAP]
 snapshot_interval=
-remote_enable=
+send_enable=
 
 [tank/media]
 snapshot_interval=
-remote_enable=
+send_enable=
 
 [tank/tmp]
 snapshot_interval=
-remote_enable=
+send_enable=
 
 [tank/var/log]
 snapshot_interval=1m
@@ -80,4 +82,28 @@ keep_15min=4
 
 [tank/var/tmp]
 snapshot_interval=
-remote_enable=
+send_enable=
+
+
+
+# '@' in the section title indicates that this file system is not local
+# note that the *_zfs_cmd settings.
+# 
+# The remote snapshots are only created *after* the local, after zsnapper
+# has aquired the execution lock, so if zsnapper takes a long time to execute
+# some snapshotting may be delayed.
+#
+# the '@' is required since zsnapper otherwise have no way to know which 
+# filesystems are on the same server...
+[zroot/backup@remote_system1]
+source_zfs_cmd=/usr/bin/ssh user@remote_system1 /sbin/zfs
+target_zfs_cmd=/sbin/zfs
+send_enable=all
+snapshot_interval=1h
+target_fs=tank/backup/remote_system1
+recv_flags=-u
+weed_enable=1
+keep_hourly=24
+keep_daily=7
+keep_weekly=4
+keep_monthly=4
