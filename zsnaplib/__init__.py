@@ -57,7 +57,7 @@ def send_snapshot(
         repl_from = repl_from.strftime(time_format)
         args = [ 'send' ] + send_opts + [ inc_flag, '{}@{}'.format(fs, repl_from), '{}@{}'.format(fs, snap) ]
     else:
-        args = [ 'send', '{}@{}'.format(fs, snap) ]
+        args = [ 'send' ] + send_opts + [ '{}@{}'.format(fs, snap) ]
 
     pipecmd = remote_zfs_cmd + [ 'receive' ] + recv_opts + [ remote_target ]
 
